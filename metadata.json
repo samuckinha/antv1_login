@@ -1,0 +1,6 @@
+{
+  "name": "ANT - Automate aNd Transform",
+  "description": "Uma plataforma completa para empreendedores automatizarem estoque, finanças e impulsionarem seus negócios com IA.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": []
+}
