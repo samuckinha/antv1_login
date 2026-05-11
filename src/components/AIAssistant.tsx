@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Send, Sparkles, X, Minimize2, Maximize2, Plus, MessageSquare, History, Trash2, Menu, Video, Rocket, Instagram, Image as ImageIcon } from 'lucide-react';
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { Page, StockItem, BusinessHealth, RadarTrend } from '../App';
 import { DREItem } from './DRE';
 
@@ -30,8 +30,12 @@ interface AIAssistantProps {
   };
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const model = ai.getGenerativeModel({ model: "gemini-1.5-flash" }); 
 
+const result = await model.generateContent({
+  contents: [...],
+  systemInstruction: "..."
+});
 const INITIAL_MESSAGE: Message = {
   role: 'model',
   text: 'Olá! Sou o Anty, seu assistente inteligente. Como posso ajudar seu negócio hoje?'
@@ -83,56 +87,106 @@ export default function AIAssistant({ dreData, stockData, healthData, radarTrend
   const activeSession = sessions.find(s => s.id === activeSessionId) || sessions[0];
   const messages = activeSession?.messages || [INITIAL_MESSAGE];
 
-  const setMessages = (updateFn: (prev: Message[]) => Message[]) => {
-    setSessions(prev => prev.map(s => {
-      if (s.id === activeSessionId) {
-        const newMessages = updateFn(s.messages);
-        let newTitle = s.title;
-        if (s.title === 'Nova Conversa' && newMessages.length > 1) {
-          const firstUserMsg = newMessages.find(m => m.role === 'user');
-          if (firstUserMsg) {
-            newTitle = firstUserMsg.text.slice(0, 30) + (firstUserMsg.text.length > 30 ? '...' : '');
-          }
-        }
-        return { ...s, messages: newMessages, title: newTitle };
-      }
-      return s;
+ const handleSend = async (overrideInput?: string) => {
+  const textToSend = overrideInput || input;
+  if (!textToSend.trim() || isLoading) return;
+
+  const userMessage = textToSend.trim();
+
+  // Adiciona a mensagem do usuário imediatamente
+  setMessages(prev => [...prev, { role: 'user', text: userMessage }]);
+  if (!overrideInput) setInput('');
+  setIsLoading(true);
+
+  try {
+    // Pega o estado mais atualizado das mensagens
+    const currentSession = sessions.find(s => s.id === activeSessionId);
+    const currentMessages = currentSession?.messages || [];
+
+    // Prepara o histórico para a API (sem a última mensagem do usuário, pois vamos enviar separadamente)
+    const history = currentMessages.slice(1).map(m => ({
+      role: m.role as "user" | "model",
+      parts: [{ text: m.text }]
     }));
-  };
 
-  const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+    // === Cálculo dos dados do negócio ===
+    const totalReceitas = dreData
+      .filter(i => i.tipo === 'RECEITA')
+      .reduce((acc, curr) => acc + curr.valor, 0);
+    
+    const totalDespesas = dreData
+      .filter(i => i.tipo === 'DESPESA')
+      .reduce((acc, curr) => acc + curr.valor, 0);
+    
+    const lucroLiquido = totalReceitas - totalDespesas;
+    const dreSummary = dreData.map(item => `${item.desc}: R$ ${item.valor} (${item.tipo})`).join('\n');
 
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTo({
-        top: scrollRef.current.scrollHeight,
-        behavior: 'smooth'
-      });
+    const stockSummary = stockData.map(item => 
+      `- ${item.name}: ${item.quantity}un (Mín: ${item.minQuantity}) - Preço: R$ ${item.unitPrice}`
+    ).join('\n');
+
+    const lowStock = stockData.filter(item => item.quantity < item.minQuantity)
+      .map(item => item.name).join(', ');
+
+    const radarSummary = radarTrends.map(t => 
+      `- ${t.topic} (Relevância: ${t.relevance}%)`
+    ).join('\n');
+
+    // === Chamada correta para Gemini ===
+    const model = ai.getGenerativeModel({ 
+      model: "gemini-1.5-flash"   // ou "gemini-2.0-flash-exp" se preferir o mais novo
+    });
+
+    const result = await model.generateContent({
+      contents: [
+        ...history,
+        { role: 'user', parts: [{ text: userMessage }] }
+      ],
+      systemInstruction: `Você é Anty, o assistente inteligente da plataforma ANT...
+Seu objetivo é ajudar microempreendedores de forma EXTREMAMENTE OBJETIVA e DIRETA. 
+Responda com clareza, evite introduções longas e use poucas palavras.
+
+VOCÊ TEM ACESSO A TODO O CONTEXTO DA PLATAFORMA:
+
+1. PERFIL DO USUÁRIO:
+Nome: ${userInfo.name} | Empresa: ${userInfo.businessName} | Nicho: ${userInfo.niche} | Plano: ${userInfo.level}
+
+2. DADOS FINANCEIROS (DRE):
+Receitas: R$ ${totalReceitas} | Despesas: R$ ${totalDespesas} | Lucro: R$ ${lucroLiquido}
+Detalhes: ${dreSummary}
+
+3. ESTOQUE:
+${stockSummary}
+${lowStock ? `ALERTA: Estoque baixo em ${lowStock}` : 'Estoque OK.'}
+
+4. SAÚDE DO NEGÓCIO:
+Score: ${healthData.score}/100 | Status: ${healthData.status}
+Recomendação: ${healthData.recommendation}
+Radar: ${radarSummary}
+
+Seja direto e use os números reais.` 
+    });
+
+    const responseText = result.response.text();
+
+    if (responseText) {
+      const cleanedText = responseText.replace(/\*/g, '');
+      setMessages(prev => [...prev, { role: 'model', text: cleanedText }]);
     }
-  }, [messages]);
 
-  const handleSend = async (overrideInput?: string) => {
-    const textToSend = overrideInput || input;
-    if (!textToSend.trim() || isLoading) return;
-
-    const userMessage = textToSend.trim();
-    setMessages(prev => [...prev, { role: 'user', text: userMessage }]);
-    if (!overrideInput) setInput('');
-    setIsLoading(true);
-
-    try {
-      const history = messages.slice(1).map(m => ({
-        role: m.role as "user" | "model",
-        parts: [{ text: m.text }]
-      }));
-
-      const totalReceitas = dreData
-        .filter(i => i.tipo === 'RECEITA')
-        .reduce((acc, curr) => acc + curr.valor, 0);
-      
+  } catch (error) {
+    console.error('Erro ao enviar mensagem:', error);
+    setMessages(prev => [
+      ...prev,
+      { 
+        role: 'model', 
+        text: '⚠️ Erro ao conectar com a IA. Tente novamente.' 
+      }
+    ]);
+  } finally {
+    setIsLoading(false);
+  }
+};
       const totalDespesas = dreData
         .filter(i => i.tipo === 'DESPESA')
         .reduce((acc, curr) => acc + curr.valor, 0);
